@@ -7,6 +7,7 @@ from threading import Thread
 from queue import Queue
 from dotenv import load_dotenv
 from ratelimit import limits, sleep_and_retry
+import re
 
 # Load environment variables from .env file
 load_dotenv()
@@ -14,6 +15,12 @@ load_dotenv()
 # Define rate limit: 29 calls per 60 seconds
 CALLS = 29
 RATE_LIMIT = 60
+
+def extract_content_from_error(error_message):
+    match = re.search(r'"content": "(.*?)"', error_message)
+    if match:
+        return match.group(1).replace('\\"', '"')
+    return None
 
 @sleep_and_retry
 @limits(calls=CALLS, period=RATE_LIMIT)
@@ -28,9 +35,17 @@ def rate_limited_api_call(client, messages, max_tokens, is_final_answer=False):
                 response_format={"type": "json_object"}
             )
             return json.loads(response.choices[0].message.content)
+        except json.JSONDecodeError as json_error:
+            # If JSON parsing fails, try to extract content from the response
+            content = extract_content_from_error(str(response.choices[0].message.content))
+            if content:
+                return {"title": "Extracted Content", "content": content}
         except Exception as e:
             if attempt == 2:
                 if is_final_answer:
+                    content = extract_content_from_error(str(e))
+                    if content:
+                        return {"title": "Final Answer (Extracted)", "content": content}
                     return {"title": "Error", "content": f"Failed to generate final answer after 3 attempts. Error: {str(e)}"}
                 else:
                     return {"title": "Error", "content": f"Failed to generate step after 3 attempts. Error: {str(e)}", "next_action": "final_answer"}
