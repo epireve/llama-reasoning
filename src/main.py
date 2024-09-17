@@ -43,7 +43,7 @@ def generate_response(client, prompt, queue):
         
         step_title = f"Step {step_count}: {step_data.get('title', 'No Title')}"
         step_content = step_data.get('content', 'No Content')
-        step_info = f"{step_title}\n\n{step_content}\n\nThinking time: {thinking_time:.2f} seconds"
+        step_info = format_step(step_title, step_content, thinking_time)
         
         queue.put(step_info)
         
@@ -63,9 +63,33 @@ def generate_response(client, prompt, queue):
     thinking_time = end_time - start_time
     total_thinking_time += thinking_time
     
-    final_answer = f"Final Answer:\n\n{final_data.get('content', 'No Content')}\n\nThinking time: {thinking_time:.2f} seconds\nTotal thinking time: {total_thinking_time:.2f} seconds"
+    final_answer = format_final_answer(final_data.get('content', 'No Content'), thinking_time, total_thinking_time)
     queue.put(final_answer)
     queue.put(None)  # Signal that we're done
+
+def format_step(title, content, thinking_time):
+    return f"""
+    <details open>
+        <summary><strong>{title}</strong></summary>
+        <pre style="white-space: pre-wrap; word-wrap: break-word;">
+{content}
+
+Thinking time: {thinking_time:.2f} seconds
+        </pre>
+    </details>
+    <br>
+    """
+
+def format_final_answer(content, thinking_time, total_time):
+    return f"""
+    <h3>Final Answer</h3>
+    <pre style="white-space: pre-wrap; word-wrap: break-word;">
+{content}
+
+Thinking time for final answer: {thinking_time:.2f} seconds
+Total thinking time: {total_time:.2f} seconds
+    </pre>
+    """
 
 def on_submit(api_key, user_query):
     if not api_key:
@@ -86,26 +110,48 @@ def on_submit(api_key, user_query):
     thread = Thread(target=generate_response, args=(client, user_query, queue))
     thread.start()
     
+    output = ""
     while True:
         step = queue.get()
         if step is None:
             break
-        yield step
+        output += step
+        yield output
 
 with gr.Blocks() as demo:
-    gr.Markdown("# 🧠 Using Llama-3.1 70b on Groq to Create O1-like Reasoning Chains")
+    gr.Markdown("# AI Reasoning Assistant")
     
     gr.Markdown("""
-    Early prototype of using prompting to create O1-like reasoning chains to improve output accuracy. It is not perfect and accuracy has yet to be formally evaluated. It is powered by Groq so that the reasoning step is fast!
+    This AI assistant breaks down complex problems into steps, providing detailed explanations for each part of its reasoning process.
+
+    **How it works:**
+    1. Enter your question in the text box below.
+    2. The AI will think through the problem step-by-step.
+    3. Each step of the reasoning process will appear in real-time.
+    4. The final answer will be provided at the end.
+
+    *Technical details: This prototype uses Llama-3.1 70b on Groq to create O1-like reasoning chains, aiming to improve output accuracy. It's powered by Groq for fast reasoning steps.*
     """)
     
-    api_input = gr.Textbox(label="Enter your Groq API Key:", type="password")
-    user_input = gr.Textbox(label="Enter your query:", lines=2)
-    submit_btn = gr.Button("Generate Response")
+    with gr.Row():
+        with gr.Column():
+            api_input = gr.Textbox(
+                label="Enter your Groq API Key:",
+                placeholder="Your Groq API Key",
+                type="password"
+            )
+            user_input = gr.Textbox(
+                label="Enter your question:",
+                placeholder="e.g., How many 'R's are in the word strawberry?",
+                lines=3
+            )
+            submit_btn = gr.Button("Generate Response")
     
-    output = gr.Textbox(label="Response", lines=20)
+    with gr.Row():
+        with gr.Column():
+            output_html = gr.HTML()
     
-    submit_btn.click(fn=on_submit, inputs=[api_input, user_input], outputs=output)
+    submit_btn.click(fn=on_submit, inputs=[api_input, user_input], outputs=output_html)
 
 if __name__ == "__main__":
     demo.launch()
