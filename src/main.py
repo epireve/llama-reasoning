@@ -2,10 +2,22 @@ import gradio as gr
 import groq
 import json
 import time
+import os
 from threading import Thread
 from queue import Queue
+from dotenv import load_dotenv
+from ratelimit import limits, sleep_and_retry
 
-def make_api_call(client, messages, max_tokens, is_final_answer=False):
+# Load environment variables from .env file
+load_dotenv()
+
+# Define rate limit: 29 calls per 60 seconds
+CALLS = 29
+RATE_LIMIT = 60
+
+@sleep_and_retry
+@limits(calls=CALLS, period=RATE_LIMIT)
+def rate_limited_api_call(client, messages, max_tokens, is_final_answer=False):
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
@@ -26,7 +38,25 @@ def make_api_call(client, messages, max_tokens, is_final_answer=False):
 
 def generate_response(client, prompt, queue):
     messages = [
-        {"role": "system", "content": """You are an expert AI assistant that explains your reasoning step by step. For each step, provide a title that describes what you're doing in that step, along with the content. Decide if you need another step or if you're ready to give the final answer. Respond in JSON format with 'title', 'content', and 'next_action' (either 'continue' or 'final_answer') keys. USE AS MANY REASONING STEPS AS POSSIBLE. AT LEAST 3. BE AWARE OF YOUR LIMITATIONS AS AN LLM AND WHAT YOU CAN AND CANNOT DO. IN YOUR REASONING, INCLUDE EXPLORATION OF ALTERNATIVE ANSWERS. CONSIDER YOU MAY BE WRONG, AND IF YOU ARE WRONG IN YOUR REASONING, WHERE IT WOULD BE. FULLY TEST ALL OTHER POSSIBILITIES. YOU CAN BE WRONG. WHEN YOU SAY YOU ARE RE-EXAMINING, ACTUALLY RE-EXAMINE, AND USE ANOTHER APPROACH TO DO SO. DO NOT JUST SAY YOU ARE RE-EXAMINING. USE AT LEAST 3 METHODS TO DERIVE THE ANSWER. USE BEST PRACTICES."""},
+        {"role": "system", "content": """
+            You are an expert AI assistant that explains your reasoning step by step. 
+            For each step, provide a title that describes what you're doing in that step, along with the content. 
+            Decide if you need another step or if you're ready to give the final answer. 
+            Respond in JSON format with 'title', 'content', and 'next_action' (either 'continue' or 'final_answer') keys. 
+
+            Example of a valid JSON response:
+                ```json
+                {
+                    "title": "Identifying Key Information",
+                    "content": "To begin solving this problem, we need to carefully examine the given information and identify the crucial elements that will guide our solution process. This involves...",
+                    "next_action": "continue"
+                }```
+
+            USE AS MANY REASONING STEPS AS POSSIBLE. AT LEAST 3. BE AWARE OF YOUR LIMITATIONS AS AN LLM AND WHAT YOU CAN AND CANNOT DO. 
+            IN YOUR REASONING, INCLUDE EXPLORATION OF ALTERNATIVE ANSWERS. CONSIDER YOU MAY BE WRONG, AND IF YOU ARE WRONG IN YOUR REASONING, WHERE IT WOULD BE. 
+            FULLY TEST ALL OTHER POSSIBILITIES. YOU CAN BE WRONG. WHEN YOU SAY YOU ARE RE-EXAMINING, ACTUALLY RE-EXAMINE, AND USE ANOTHER APPROACH TO DO SO. DO NOT JUST SAY YOU ARE RE-EXAMINING. 
+            USE AT LEAST 3 METHODS TO DERIVE THE ANSWER. USE BEST PRACTICES. YOU ARE A WORLD-CLASS AI ASSISTANT.
+            """},
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": "Thank you! I will now think step by step following my instructions, starting at the beginning after decomposing the problem."}
     ]
@@ -36,7 +66,7 @@ def generate_response(client, prompt, queue):
     
     while True:
         start_time = time.time()
-        step_data = make_api_call(client, messages, 300)
+        step_data = rate_limited_api_call(client, messages, 300)
         end_time = time.time()
         thinking_time = end_time - start_time
         total_thinking_time += thinking_time
@@ -58,7 +88,7 @@ def generate_response(client, prompt, queue):
     messages.append({"role": "user", "content": "Please provide the final answer based on your reasoning above."})
     
     start_time = time.time()
-    final_data = make_api_call(client, messages, 200, is_final_answer=True)
+    final_data = rate_limited_api_call(client, messages, 200, is_final_answer=True)
     end_time = time.time()
     thinking_time = end_time - start_time
     total_thinking_time += thinking_time
@@ -91,9 +121,10 @@ Total thinking time: {total_time:.2f} seconds
     </pre>
     """
 
-def on_submit(api_key, user_query):
+def on_submit(user_query):
+    api_key = os.getenv('GROQ_API_KEY')
     if not api_key:
-        yield "Please enter your Groq API key to proceed."
+        yield "Please set the GROQ_API_KEY environment variable."
         return
     
     if not user_query:
@@ -135,11 +166,6 @@ with gr.Blocks() as demo:
     
     with gr.Row():
         with gr.Column():
-            api_input = gr.Textbox(
-                label="Enter your Groq API Key:",
-                placeholder="Your Groq API Key",
-                type="password"
-            )
             user_input = gr.Textbox(
                 label="Enter your question:",
                 placeholder="e.g., How many 'R's are in the word strawberry?",
@@ -151,7 +177,7 @@ with gr.Blocks() as demo:
         with gr.Column():
             output_html = gr.HTML()
     
-    submit_btn.click(fn=on_submit, inputs=[api_input, user_input], outputs=output_html)
+    submit_btn.click(fn=on_submit, inputs=[user_input], outputs=output_html)
 
 if __name__ == "__main__":
     demo.launch()
